@@ -14,6 +14,7 @@ from src.claim_analysis import (
 )
 from src.data_loader import load_par4pc_case
 from src.llm_tools import decompose_claim_llm, openai_available, rerank_prior_art_llm, verify_evidence_llm
+from src.patent_rerank import rank_candidates_hybrid_coverage, rank_candidates_patent_specialized
 from src.retrieval import (
     rank_candidates_bm25,
     rank_candidates_cross_encoder,
@@ -100,6 +101,38 @@ def retrieve_prior_art_node(state: PatentAgentState) -> PatentAgentState:
                     case,
                     top_k=top_k,
                     embedding_model=state.get("embedding_model") or "AI-Growth-Lab/PatentSBERTa",
+                )
+            }
+        except ImportError as exc:
+            warnings = list(state.get("warnings", []))
+            warnings.append(f"sentence-transformers not installed; used BM25 instead. Detail: {exc}")
+            return {"ranked": rank_candidates_bm25(case, top_k=top_k), "warnings": warnings}
+
+    if retrieval_method == "hybrid-coverage":
+        try:
+            return {
+                "ranked": rank_candidates_hybrid_coverage(
+                    case,
+                    top_k=top_k,
+                    embedding_model=state.get("embedding_model") or "AI-Growth-Lab/PatentSBERTa",
+                )
+            }
+        except ImportError as exc:
+            warnings = list(state.get("warnings", []))
+            warnings.append(f"sentence-transformers not installed; used BM25 instead. Detail: {exc}")
+            return {"ranked": rank_candidates_bm25(case, top_k=top_k), "warnings": warnings}
+
+    if retrieval_method == "patent-specialized":
+        try:
+            return {
+                "ranked": rank_candidates_patent_specialized(
+                    case,
+                    top_k=top_k,
+                    embedding_model=state.get("embedding_model") or "AI-Growth-Lab/PatentSBERTa",
+                    use_query_expansion=True,
+                    use_llm_expansion=False,
+                    use_llm_decompose=bool(state.get("use_llm_decompose")),
+                    llm_model=state.get("llm_model") or "",
                 )
             }
         except ImportError as exc:

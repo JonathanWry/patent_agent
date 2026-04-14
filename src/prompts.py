@@ -75,3 +75,64 @@ User query:
 Retrieved evidence:
 {evidence_block}
 """
+
+TURN_PLAN_SYSTEM = """You are a patent search planning assistant.
+Classify the user's turn in a patent-search conversation and decide whether to retrieve new patents or reuse the current working set.
+Be conservative and practical."""
+
+TURN_PLAN_USER = """Classify this patent-search turn.
+
+Allowed intents:
+- new_search
+- follow_up_on_previous_results
+- compare_previous_results
+- aspect_filter
+- similar_patent_search
+- combination_exploration
+
+Allowed actions:
+- retrieve_new
+- rerank_existing
+- reuse_context
+
+Conversation context available:
+{has_context}
+
+Previously retrieved patent titles:
+{previous_titles}
+
+User turn:
+{query_text}
+"""
+
+QUERY_EXPANSION_SYSTEM = """You expand patent search queries.
+Generate concrete alternative search phrasings that preserve the technical meaning while covering likely patent terminology variation."""
+
+QUERY_EXPANSION_USER = """Expand this patent-related query into concise search variants.
+
+Rules:
+- Preserve the original technical meaning.
+- Prefer terminology variants common in patents.
+- Include 3 to 6 variants.
+- Do not invent new technical features.
+
+Query:
+{query_text}
+"""
+
+RAG_VERIFY_SYSTEM = """You verify whether a patent QA answer is supported by the provided evidence snippets.
+Use only the evidence snippets and do not rely on outside knowledge."""
+
+RAG_VERIFY_USER = """Verify whether this patent QA answer is supported by the provided evidence.
+
+Allowed statuses:
+- supported
+- partially_supported
+- unsupported
+
+Answer:
+{answer_text}
+
+Evidence:
+{evidence_block}
+"""

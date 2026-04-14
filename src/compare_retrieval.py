@@ -80,6 +80,16 @@ def main() -> None:
     configs = [
         RetrievalConfig(name="BM25", method="bm25"),
         RetrievalConfig(
+            name="Hybrid Coverage",
+            method="hybrid-coverage",
+            embedding_model="AI-Growth-Lab/PatentSBERTa",
+        ),
+        RetrievalConfig(
+            name="Patent Specialized",
+            method="patent-specialized",
+            embedding_model="AI-Growth-Lab/PatentSBERTa",
+        ),
+        RetrievalConfig(
             name="PatentSBERTa",
             method="local-embedding",
             embedding_model="AI-Growth-Lab/PatentSBERTa",

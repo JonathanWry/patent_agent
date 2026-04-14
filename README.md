@@ -180,6 +180,12 @@ PatentSBERTa local embedding:
 python -m src.evaluate_par4pc --retrieval-method local-embedding
 ```
 
+Patent-specific hybrid reranking:
+
+```bash
+python -m src.evaluate_par4pc --retrieval-method hybrid-coverage
+```
+
 BM25:
 
 ```bash
@@ -204,6 +210,11 @@ recall@3: 1.000
 exact@|gold|: 0.700
 ```
 
+Current interpretation:
+
+- `local-embedding` with `AI-Growth-Lab/PatentSBERTa` is still the strongest benchmark default
+- `hybrid-coverage` is a patent-specific ablation that combines dense retrieval, BM25, and limitation coverage, but it does not yet beat PatentSBERTa on the bundled local sample set
+
 ### 7.2 Retrieval comparison table
 
 ```bash
@@ -213,6 +224,7 @@ python -m src.compare_retrieval --output outputs/retrieval_comparison.csv
 This compares:
 
 - `bm25`
+- `hybrid-coverage`
 - `local-embedding` with patent-domain and general-domain models
 - `local-cross-encoder` rerankers
 
@@ -420,12 +432,19 @@ These require OpenAI:
 - `openai-embedding`
 - `llm-rerank`
 
+Patent-specific retrieval experiments available without OpenAI:
+
+- `hybrid-coverage`
+- `local-embedding`
+- `bm25`
+
 ## 13. Notes and Limitations
 
 - This is a technical prior-art exploration tool, not legal advice.
 - The planner for conversational follow-up is heuristic, not fully autonomous.
 - The benchmark evaluation is strongest on `PAR4PC`; free-text QA is a demo-oriented extension.
 - The quality of free-text search depends on the persistent index coverage.
+- The current patent-specific `hybrid-coverage` reranker addresses real patent-RAG pain points, but it still needs tuning before it can replace PatentSBERTa as the benchmark default.
 
 ## 14. Preparing for GitHub
 

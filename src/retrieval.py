@@ -201,6 +201,13 @@ def _cached_local_embeddings(embedding_model: str, corpus_texts: tuple[str, ...]
     return np.array(embeddings, dtype=np.float32)
 
 
+def encode_texts_local_embeddings(
+    texts: list[str] | tuple[str, ...],
+    embedding_model: str = "AI-Growth-Lab/PatentSBERTa",
+) -> np.ndarray:
+    return _cached_local_embeddings(embedding_model, tuple(texts))
+
+
 def rank_patent_pool_bm25(
     query_text: str,
     candidates: list[PatentCandidate],

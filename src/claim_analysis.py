@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 
 from rank_bm25 import BM25Okapi
 
@@ -102,6 +103,15 @@ def candidate_segments(candidate: PatentCandidate) -> list[tuple[str, str]]:
     return segments
 
 
+def _segment_texts(candidate: PatentCandidate) -> tuple[str, ...]:
+    return tuple(text for _, text in candidate_segments(candidate))
+
+
+@lru_cache(maxsize=256)
+def _cached_segment_bm25(corpus_texts: tuple[str, ...]) -> BM25Okapi:
+    return BM25Okapi([tokenize(text) for text in corpus_texts])
+
+
 def extract_evidence_for_candidate(
     limitation: ClaimLimitation,
     candidate: PatentCandidate,
@@ -124,9 +134,8 @@ def rank_candidate_segments(
     candidate: PatentCandidate,
 ) -> list[tuple[str, str, float]]:
     segments = candidate_segments(candidate)
-    corpus = [tokenize(text) for _, text in segments]
     query = tokenize(query_text)
-    bm25 = BM25Okapi(corpus)
+    bm25 = _cached_segment_bm25(_segment_texts(candidate))
     scores = bm25.get_scores(query)
     ranked = [
         (source, evidence, float(score))

@@ -18,8 +18,8 @@ def main() -> None:
     parser.add_argument("--llm-verify", action="store_true")
     parser.add_argument(
         "--retrieval-method",
-        choices=["bm25", "local-embedding", "local-cross-encoder", "openai-embedding", "llm-rerank"],
-        default="bm25",
+        choices=["bm25", "local-embedding", "hybrid-coverage", "patent-specialized", "local-cross-encoder", "openai-embedding", "llm-rerank"],
+        default="local-embedding",
     )
     parser.add_argument("--llm-model", default="")
     parser.add_argument("--embedding-model", default="")

@@ -5,11 +5,13 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from src.claim_analysis import ClaimLimitation, extract_evidence_for_candidate
+from src.claim_analysis import ClaimLimitation, VerificationResult, extract_evidence_for_candidate
 from src.data_loader import combine_patent_pools, load_hf_par4pc_patent_pool, load_par4pc_case, load_unique_patent_pool
-from src.free_text_qa import gather_query_evidence, heuristic_rag_answer
+from src.free_text_qa import gather_query_evidence, heuristic_rag_answer, verify_rag_answer_heuristic
 from src.graph import run_graph
-from src.llm_tools import answer_query_with_rag, openai_available
+from src.llm_tools import answer_query_with_rag, openai_available, plan_turn_llm, verify_rag_answer_llm
+from src.patent_rerank import rank_patent_pool_hybrid_coverage
+from src.patent_rerank import rank_patent_pool_patent_specialized
 from src.persistent_index import (
     index_exists,
     load_persistent_candidates,
@@ -30,9 +32,9 @@ DEFAULT_INDEX_DIR = Path("data/indexes/par4pc_patentsberta_demo")
 DEFAULT_EMBEDDING_MODEL = "AI-Growth-Lab/PatentSBERTa"
 DEFAULT_RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 FREE_TEXT_PRIMARY_RETRIEVAL_OPTIONS = ["bm25", "local-embedding"]
-BENCHMARK_PRIMARY_RETRIEVAL_OPTIONS = ["local-embedding", "bm25"]
-FREE_TEXT_EXPERIMENTAL_OPTIONS = ["local-cross-encoder"]
-BENCHMARK_EXPERIMENTAL_OPTIONS = ["local-cross-encoder", "openai-embedding", "llm-rerank"]
+BENCHMARK_PRIMARY_RETRIEVAL_OPTIONS = ["local-embedding", "patent-specialized", "bm25"]
+FREE_TEXT_EXPERIMENTAL_OPTIONS = ["patent-specialized", "hybrid-coverage", "local-cross-encoder"]
+BENCHMARK_EXPERIMENTAL_OPTIONS = ["patent-specialized", "hybrid-coverage", "local-cross-encoder", "openai-embedding", "llm-rerank"]
 DEFAULT_FREE_TEXT = (
     "1. A method for leveraging social networks in physical gatherings, the method comprising: "
     "generating, by one or more computer processors, a profile for each participant of one or more "
@@ -166,7 +168,40 @@ def search_patents(
     pool_source: str,
     index_dir: str,
     force_subset: bool = False,
+    llm_model: str = "",
+    use_llm_retrieval_decompose: bool = False,
+    use_llm_query_expansion: bool = False,
 ):
+    if retrieval_method == "patent-specialized":
+        if pool_source == "Persistent local index" and not force_subset:
+            initial = search_persistent_index(
+                query_text,
+                index_dir=index_dir,
+                top_k=max(top_k * 4, 12),
+                embedding_model=embedding_model,
+            )
+            pool = [item.candidate for item in initial]
+        elif pool_source == "Persistent local index":
+            pool = load_persistent_candidates(index_dir)
+        return rank_patent_pool_patent_specialized(
+            query_text,
+            pool,
+            top_k=top_k,
+            embedding_model=embedding_model or DEFAULT_EMBEDDING_MODEL,
+            use_query_expansion=True,
+            use_llm_expansion=use_llm_query_expansion,
+            use_llm_decompose=use_llm_retrieval_decompose,
+            llm_model=llm_model,
+        )
+    if retrieval_method == "hybrid-coverage":
+        if pool_source == "Persistent local index" and not force_subset:
+            pool = load_persistent_candidates(index_dir)
+        return rank_patent_pool_hybrid_coverage(
+            query_text,
+            pool,
+            top_k=top_k,
+            embedding_model=embedding_model or DEFAULT_EMBEDDING_MODEL,
+        )
     if pool_source == "Persistent local index" and retrieval_method == "local-embedding" and not force_subset:
         return search_persistent_index(
             query_text,
@@ -174,7 +209,7 @@ def search_patents(
             top_k=top_k,
             embedding_model=embedding_model,
         )
-    if pool_source == "Persistent local index":
+    if pool_source == "Persistent local index" and not force_subset:
         pool = load_persistent_candidates(index_dir)
     if retrieval_method == "local-embedding":
         return rank_patent_pool_local_embeddings(
@@ -239,6 +274,20 @@ def generate_free_text_answer(
     return heuristic_rag_answer(query_text, ranked, snippets, plan=plan), snippets, warnings
 
 
+def verify_free_text_answer(
+    answer_text: str,
+    snippets,
+    llm_model: str,
+    use_llm_answer_verification: bool,
+) -> tuple[VerificationResult, list[str]]:
+    warnings: list[str] = []
+    if use_llm_answer_verification:
+        if openai_available():
+            return verify_rag_answer_llm(answer_text, snippets, model=llm_model), warnings
+        warnings.append("OPENAI_API_KEY not set; used heuristic answer verification.")
+    return verify_rag_answer_heuristic(answer_text, snippets), warnings
+
+
 def render_benchmark_mode(
     data_dir: str,
     top_k: int,
@@ -249,6 +298,10 @@ def render_benchmark_mode(
     embedding_model: str,
     reranker_model: str,
 ) -> None:
+    st.info(
+        "Benchmark Analysis is the labeled PAR4PC evaluation path. "
+        "Use `local-embedding` as the stable default. Compare against `patent-specialized` as an experimental patent-aware reranker."
+    )
     case_paths = list_case_paths(data_dir)
     if not case_paths:
         st.error("No PAR4PC JSON files found.")
@@ -340,10 +393,19 @@ def render_free_text_mode(
     reranker_model: str,
     llm_model: str,
     use_llm_answer: bool,
+    use_llm_planner: bool,
+    use_llm_retrieval_decompose: bool,
+    use_llm_query_expansion: bool,
+    use_llm_answer_verification: bool,
     pool_source: str,
     hub_rows_per_split: int,
     index_dir: str,
 ) -> None:
+    st.info(
+        "Free-text Search is the exploratory patent QA mode. "
+        "For larger patent pools, start with `bm25` for speed and stable recall. "
+        "Treat `patent-specialized` here as a research path, not the default."
+    )
     pool = None
     if pool_source == "Persistent local index":
         if not index_exists(index_dir):
@@ -398,7 +460,15 @@ def render_free_text_mode(
     st.chat_message("user").write(query)
 
     agent_state = st.session_state.free_text_agent_state
-    plan = classify_turn(query, has_context=bool(agent_state["working_patents"]))
+    if use_llm_planner and openai_available():
+        plan = plan_turn_llm(
+            query_text=query,
+            has_context=bool(agent_state["working_patents"]),
+            previous_titles=[result.title for result in agent_state["last_ranked"][:5]],
+            model=llm_model or None,
+        )
+    else:
+        plan = classify_turn(query, has_context=bool(agent_state["working_patents"]))
     effective_query = enrich_query_with_context(query, plan, agent_state["last_ranked"])
 
     with st.spinner("Searching related patents..."):
@@ -412,8 +482,14 @@ def render_free_text_mode(
                 top_k=top_k,
                 pool_source=pool_source,
                 index_dir=index_dir,
+                llm_model=llm_model,
+                use_llm_retrieval_decompose=use_llm_retrieval_decompose,
+                use_llm_query_expansion=use_llm_query_expansion,
             )
             working_patents = [result.candidate for result in ranked]
+        elif plan.action == "reuse_context":
+            ranked = agent_state["last_ranked"]
+            working_patents = agent_state["working_patents"]
         else:
             working_patents = agent_state["working_patents"]
             ranked = search_patents(
@@ -426,6 +502,9 @@ def render_free_text_mode(
                 pool_source=pool_source,
                 index_dir=index_dir,
                 force_subset=True,
+                llm_model=llm_model,
+                use_llm_retrieval_decompose=use_llm_retrieval_decompose,
+                use_llm_query_expansion=use_llm_query_expansion,
             )
         answer, snippets, warnings = generate_free_text_answer(
             query_text=query,
@@ -434,6 +513,13 @@ def render_free_text_mode(
             use_llm_answer=use_llm_answer,
             plan=plan,
         )
+        answer_verification, verification_warnings = verify_free_text_answer(
+            answer_text=answer,
+            snippets=snippets,
+            llm_model=llm_model,
+            use_llm_answer_verification=use_llm_answer_verification,
+        )
+        warnings.extend(verification_warnings)
         summary, evidence_df = free_text_summary(query, ranked)
 
     agent_state["last_ranked"] = ranked
@@ -454,6 +540,9 @@ def render_free_text_mode(
         if effective_query != query:
             st.write("Context-enriched query:")
             st.code(effective_query)
+    with st.expander("Answer Verification"):
+        st.write(f"Status: `{answer_verification.status}`")
+        st.write(f"Reason: {answer_verification.reason}")
 
     with st.expander("Ranked Patents", expanded=True):
         st.dataframe(ranked_table(ranked), use_container_width=True, hide_index=True)
@@ -488,6 +577,10 @@ def main() -> None:
     with st.sidebar:
         st.header("Settings")
         mode = st.radio("Mode", options=["Free-text Search", "Benchmark Analysis"], index=0)
+        if mode == "Free-text Search":
+            st.caption("Recommended retrieval: `bm25` on larger pools. Use experimental methods only for comparison.")
+        else:
+            st.caption("Recommended retrieval: `local-embedding` as the current stable benchmark default; compare `patent-specialized` experimentally.")
         data_dir = st.text_input("PAR4PC data directory", value=str(DEFAULT_DATA_DIR))
         top_k = st.slider("Top-k prior art", min_value=1, max_value=8, value=3)
         show_experimental = st.checkbox("Show experimental retrieval methods", value=False)
@@ -526,6 +619,10 @@ def main() -> None:
 
         with st.expander("Advanced Settings"):
             use_llm_answer = st.checkbox("Use LLM grounded answer", value=False)
+            use_llm_planner = st.checkbox("Use LLM planner", value=False)
+            use_llm_retrieval_decompose = st.checkbox("Use LLM retrieval decomposition", value=False)
+            use_llm_query_expansion = st.checkbox("Use LLM query expansion", value=False)
+            use_llm_answer_verification = st.checkbox("Use LLM answer verification", value=False)
             use_llm_decompose = st.checkbox("Use LLM claim decomposition")
             use_llm_verify = st.checkbox("Use LLM evidence verification")
             llm_model = st.text_input("LLM model", value="gpt-4o-mini")
@@ -553,8 +650,11 @@ def main() -> None:
 
         needs_openai = (
             use_llm_answer
-            or
-            use_llm_decompose
+            or use_llm_planner
+            or use_llm_retrieval_decompose
+            or use_llm_query_expansion
+            or use_llm_answer_verification
+            or use_llm_decompose
             or use_llm_verify
             or retrieval_method in {"openai-embedding", "llm-rerank"}
         )
@@ -581,6 +681,10 @@ def main() -> None:
             reranker_model=reranker_model,
             llm_model=llm_model,
             use_llm_answer=use_llm_answer,
+            use_llm_planner=use_llm_planner,
+            use_llm_retrieval_decompose=use_llm_retrieval_decompose,
+            use_llm_query_expansion=use_llm_query_expansion,
+            use_llm_answer_verification=use_llm_answer_verification,
             pool_source=pool_source,
             hub_rows_per_split=int(hub_rows_per_split),
             index_dir=index_dir,

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from src.claim_analysis import rank_candidate_segments
+from src.claim_analysis import PATENT_STOPWORDS, VerificationResult, rank_candidate_segments
+from src.retrieval import tokenize
 from src.query_planner import TurnPlan
 
 
@@ -114,3 +115,51 @@ def heuristic_rag_answer(
         "This answer is heuristic unless LLM grounded answering is enabled. It is a technical relevance summary, not legal advice."
     )
     return "\n\n".join(lines)
+
+
+def verify_rag_answer_heuristic(answer_text: str, snippets: list[QueryEvidenceSnippet]) -> VerificationResult:
+    content_lines = []
+    for raw_line in answer_text.splitlines():
+        line = raw_line.strip()
+        lower = line.lower()
+        if not line:
+            continue
+        if lower.startswith("grounded "):
+            continue
+        if lower.startswith("supporting citations:"):
+            continue
+        if "technical relevance summary, not legal advice" in lower:
+            continue
+        if "unless llm grounded answering is enabled" in lower:
+            continue
+        content_lines.append(line)
+
+    content_text = "\n".join(content_lines) if content_lines else answer_text
+    answer_terms = {
+        token
+        for token in tokenize(content_text)
+        if token not in PATENT_STOPWORDS and len(token) > 2
+    }
+    evidence_terms = {
+        token
+        for snippet in snippets
+        for token in tokenize(snippet.evidence)
+        if token not in PATENT_STOPWORDS and len(token) > 2
+    }
+    if not answer_terms:
+        return VerificationResult(status="unsupported", reason="No meaningful answer terms found.")
+
+    overlap = len(answer_terms & evidence_terms) / len(answer_terms)
+    has_citation = "[" in answer_text and "]" in answer_text
+    cited_patents = {snippet.patent_id for snippet in snippets[:3] if snippet.patent_id in answer_text}
+    if overlap >= 0.35 and has_citation and cited_patents:
+        return VerificationResult(
+            status="supported",
+            reason=f"Content/evidence overlap={overlap:.2f}; answer cites retrieved patents directly.",
+        )
+    if overlap >= 0.18 and (has_citation or cited_patents):
+        return VerificationResult(
+            status="partially_supported",
+            reason=f"Content/evidence overlap={overlap:.2f}; answer is grounded but some wording extends beyond the snippets.",
+        )
+    return VerificationResult(status="unsupported", reason=f"Low answer/evidence token overlap={overlap:.2f}.")

@@ -4,8 +4,9 @@ import argparse
 from pathlib import Path
 
 from src.data_loader import combine_patent_pools, load_hf_par4pc_patent_pool, load_unique_patent_pool
-from src.free_text_qa import gather_query_evidence, heuristic_rag_answer
-from src.llm_tools import answer_query_with_rag, openai_available
+from src.free_text_qa import gather_query_evidence, heuristic_rag_answer, verify_rag_answer_heuristic
+from src.llm_tools import answer_query_with_rag, openai_available, verify_rag_answer_llm
+from src.patent_rerank import rank_patent_pool_hybrid_coverage, rank_patent_pool_patent_specialized
 from src.persistent_index import index_exists, load_persistent_candidates, search_persistent_index
 from src.retrieval import rank_patent_pool_bm25, rank_patent_pool_local_embeddings
 
@@ -49,9 +50,16 @@ def main() -> None:
     parser.add_argument("--pool-source", choices=["persistent", "local", "hub", "combined"], default="persistent")
     parser.add_argument("--hub-rows-per-split", type=int, default=500)
     parser.add_argument("--index-dir", default=str(DEFAULT_INDEX_DIR))
-    parser.add_argument("--retrieval-method", choices=["bm25", "local-embedding"], default="local-embedding")
+    parser.add_argument(
+        "--retrieval-method",
+        choices=["bm25", "local-embedding", "hybrid-coverage", "patent-specialized"],
+        default="patent-specialized",
+    )
     parser.add_argument("--embedding-model", default="")
     parser.add_argument("--llm-answer", action="store_true")
+    parser.add_argument("--llm-retrieval-decompose", action="store_true")
+    parser.add_argument("--llm-query-expansion", action="store_true")
+    parser.add_argument("--llm-answer-verification", action="store_true")
     parser.add_argument("--llm-model", default="")
     args = parser.parse_args()
 
@@ -68,6 +76,30 @@ def main() -> None:
                 top_k=args.top_k,
                 embedding_model=args.embedding_model,
             )
+        elif args.retrieval_method == "hybrid-coverage":
+            ranked = rank_patent_pool_hybrid_coverage(
+                args.query,
+                load_persistent_candidates(args.index_dir),
+                top_k=args.top_k,
+                embedding_model=args.embedding_model or "AI-Growth-Lab/PatentSBERTa",
+            )
+        elif args.retrieval_method == "patent-specialized":
+            initial = search_persistent_index(
+                args.query,
+                args.index_dir,
+                top_k=max(args.top_k * 4, 12),
+                embedding_model=args.embedding_model,
+            )
+            ranked = rank_patent_pool_patent_specialized(
+                args.query,
+                [item.candidate for item in initial],
+                top_k=args.top_k,
+                embedding_model=args.embedding_model or "AI-Growth-Lab/PatentSBERTa",
+                use_query_expansion=True,
+                use_llm_expansion=args.llm_query_expansion,
+                use_llm_decompose=args.llm_retrieval_decompose,
+                llm_model=args.llm_model,
+            )
         else:
             ranked = rank_patent_pool_bm25(
                 args.query,
@@ -76,7 +108,25 @@ def main() -> None:
             )
     else:
         pool = _load_pool(args.data_dir, args.pool_source, args.hub_rows_per_split)
-        if args.retrieval_method == "local-embedding":
+        if args.retrieval_method == "hybrid-coverage":
+            ranked = rank_patent_pool_hybrid_coverage(
+                args.query,
+                pool,
+                top_k=args.top_k,
+                embedding_model=args.embedding_model or "AI-Growth-Lab/PatentSBERTa",
+            )
+        elif args.retrieval_method == "patent-specialized":
+            ranked = rank_patent_pool_patent_specialized(
+                args.query,
+                pool,
+                top_k=args.top_k,
+                embedding_model=args.embedding_model or "AI-Growth-Lab/PatentSBERTa",
+                use_query_expansion=True,
+                use_llm_expansion=args.llm_query_expansion,
+                use_llm_decompose=args.llm_retrieval_decompose,
+                llm_model=args.llm_model,
+            )
+        elif args.retrieval_method == "local-embedding":
             ranked = rank_patent_pool_local_embeddings(
                 args.query,
                 pool,
@@ -94,9 +144,15 @@ def main() -> None:
             answer += f"\n\nNote: {response.insufficiency_note}"
     else:
         answer = heuristic_rag_answer(args.query, ranked, snippets)
+    if args.llm_answer_verification and openai_available():
+        verification = verify_rag_answer_llm(answer, snippets, model=args.llm_model)
+    else:
+        verification = verify_rag_answer_heuristic(answer, snippets)
 
     print("Answer\n======")
     print(answer)
+    print("\nAnswer Verification\n===================")
+    print(f"{verification.status}: {verification.reason}")
     print("\nRanked Patents\n==============")
     for index, result in enumerate(ranked, start=1):
         print(f"{index}. {result.patent_id} | {result.score:.3f} | {result.title}")

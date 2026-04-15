@@ -105,6 +105,58 @@ What it adds on top of the baseline:
 
 This is the main method to demo.
 
+### Why this split exists
+
+We keep the product comparison intentionally simple:
+
+- `Normal RAG baseline`
+  - answers the question: "what does a simpler patent retrieval system return?"
+- `Our optimized patent agent`
+  - answers the question: "what changes when we add patent-specific reranking, context reuse, evidence handling, and verification?"
+
+This keeps the UI comparison coherent. The baseline is intentionally narrow. The optimized path is the full system.
+
+### What each optimized step is for
+
+#### Persistent local index coarse recall
+
+Purpose:
+- retrieve candidate patents quickly from a larger local pool
+- avoid rebuilding embeddings or indices every run
+
+#### Linear patent reranker
+
+Purpose:
+- rerank the recalled candidate patents using benchmark-validated patent features
+- move beyond pure semantic similarity
+
+Current feature set:
+- `dense_score`
+- `bm25_score`
+- `field_lexical_score`
+
+#### Conversational planner / working-set reuse
+
+Purpose:
+- support follow-up patent questions
+- reuse current results when the user is filtering or comparing prior results
+
+#### Evidence extraction
+
+Purpose:
+- identify the most relevant title / abstract / claim snippets
+- show why a patent was retrieved
+
+#### Grounded answer
+
+Purpose:
+- answer from retrieved evidence rather than only listing patents
+
+#### Answer verification
+
+Purpose:
+- indicate whether the answer appears supported by the retrieved evidence
+
 ---
 
 ## 3. What each component means
@@ -168,6 +220,11 @@ Benchmark mode uses PANORAMA `PAR4PC`, where each case has:
 - one target claim
 - candidate prior-art patents `A-H`
 - gold answers
+
+In short:
+
+- product mode is for user-facing patent search and QA
+- benchmark mode is for validating retrieval improvements before or while moving them into the product path
 
 ---
 
@@ -552,3 +609,14 @@ To push:
 git remote add origin <your-github-repo-url>
 git push -u origin main
 ```
+
+---
+
+## 15. Extra teammate docs
+
+For teammates who need the system explanation rather than the run commands:
+
+- method and component overview:
+  - [docs/METHODS_OVERVIEW.md](/Users/jonathanwang/Desktop/Emory/Year_4_Sem_2/CS%20329/patent-agent/docs/METHODS_OVERVIEW.md)
+- handoff / UI / evaluation notes:
+  - [docs/TEAM_HANDOFF.md](/Users/jonathanwang/Desktop/Emory/Year_4_Sem_2/CS%20329/patent-agent/docs/TEAM_HANDOFF.md)

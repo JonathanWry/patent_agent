@@ -15,6 +15,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 from src.data_loader import Par4pcCase, load_hf_par4pc_cases
+from src.feature_cache import load_or_build_feature_rows
 from src.patent_rerank import patent_specialized_feature_vectors, rank_candidates_patent_specialized
 from src.retrieval import rank_candidates_local_embeddings
 
@@ -33,15 +34,13 @@ DEFAULT_LINEAR_FEATURE_NAMES = [
     "dense_score",
     "bm25_score",
     "field_lexical_score",
-    "field_rarity_score",
-    "coverage_score",
 ]
 DEFAULT_LINEAR_SOLVER = "liblinear"
 DEFAULT_LINEAR_C = 4.0
 DEFAULT_LINEAR_CLASS_WEIGHT: str | None = None
 DEFAULT_LINEAR_TRAIN_SPLITS = ("train",)
-DEFAULT_LINEAR_TRAIN_MAX_ROWS = 100
-DEFAULT_LINEAR_MODEL_PATH = Path("data/models/linear_patent_reranker_patentsberta_train100.joblib")
+DEFAULT_LINEAR_TRAIN_MAX_ROWS = 200
+DEFAULT_LINEAR_MODEL_PATH = Path("data/models/linear_patent_reranker_patentsberta_train200_3feat.joblib")
 
 
 @dataclass(frozen=True)
@@ -57,25 +56,25 @@ def _build_candidate_rows(
     embedding_model: str,
     use_query_expansion: bool,
     use_focused_query: bool,
+    cache_namespace: str | None = None,
 ) -> list[CandidateRow]:
+    row_dicts = load_or_build_feature_rows(
+        cases=cases,
+        embedding_model=embedding_model,
+        use_query_expansion=use_query_expansion,
+        use_focused_query=use_focused_query,
+        namespace=cache_namespace,
+    )
     rows: list[CandidateRow] = []
-    for case_index, case in enumerate(cases):
-        feature_vectors = patent_specialized_feature_vectors(
-            query_text=case.target_claim,
-            candidates=list(case.candidates.values()),
-            embedding_model=embedding_model,
-            use_query_expansion=use_query_expansion,
-            use_focused_query=use_focused_query,
-        )
-        for letter, candidate in sorted(case.candidates.items()):
-            rows.append(
-                CandidateRow(
-                    case_index=case_index,
-                    letter=letter,
-                    is_gold=int(letter in case.gold_answers),
-                    features=feature_vectors[candidate.patent_id].as_dict(),
-                )
+    for row in row_dicts:
+        rows.append(
+            CandidateRow(
+                case_index=int(row["case_index"]),
+                letter=str(row["letter"]),
+                is_gold=int(row["is_gold"]),
+                features={name: float(row[name]) for name in FEATURE_ORDER},
             )
+        )
     return rows
 
 
@@ -214,6 +213,7 @@ def evaluate_forward_selection(
         embedding_model=embedding_model,
         use_query_expansion=use_query_expansion,
         use_focused_query=use_focused_query,
+        cache_namespace=f"linear_cv_{len(cases)}cases",
     )
     output_rows: list[dict[str, object]] = []
     for prefix_end in range(1, len(FEATURE_ORDER) + 1):
@@ -254,6 +254,7 @@ def evaluate_single_feature_set(
         embedding_model=embedding_model,
         use_query_expansion=use_query_expansion,
         use_focused_query=use_focused_query,
+        cache_namespace=f"linear_single_{len(cases)}cases",
     )
     rankings = _cross_validated_rankings(
         cases,
@@ -282,6 +283,7 @@ def train_linear_reranker_from_cases(
         embedding_model=embedding_model,
         use_query_expansion=use_query_expansion,
         use_focused_query=use_focused_query,
+        cache_namespace=f"linear_train_{len(cases)}cases",
     )
     X, y = _rows_to_matrix(rows, feature_names)
     return _fit_model_with_params(

@@ -198,7 +198,23 @@ Prebuild the cached linear reranker model:
 python -m src.train_linear_patent_reranker \
   --mode train-default-model \
   --splits train \
-  --max-rows-per-split 100
+  --max-rows-per-split 200
+```
+
+Prebuild feature caches used by the learned reranker experiments:
+
+```bash
+python -m src.feature_cache \
+  --source hf \
+  --splits train \
+  --max-rows-per-split 200 \
+  --namespace linear_train_200cases
+
+python -m src.feature_cache \
+  --source hf \
+  --splits validation \
+  --max-rows-per-split 100 \
+  --namespace scan_eval_100cases
 ```
 
 BM25:
@@ -285,18 +301,28 @@ Targeted single-config evaluation for the current best linear subset:
 python -m src.train_linear_patent_reranker \
   --mode single \
   --max-rows-per-split 100 \
-  --feature-names dense_score bm25_score field_lexical_score field_rarity_score coverage_score \
+  --feature-names dense_score bm25_score field_lexical_score \
   --class-weight none \
   --c-value 4.0
 ```
 
-On the current `validation-100` slice, this 5-feature linear reranker slightly improves over pure `local-embedding` on `hit@1` and improves `exact@|gold|`, while remaining simpler than the full hand-tuned `patent-specialized` score.
+Train-size / feature-set scan:
+
+```bash
+python -m src.scan_linear_reranker_configs \
+  --train-rows 50 100 200 \
+  --eval-rows 100 \
+  --output outputs/linear_reranker_scan.csv
+```
+
+If you prebuilt the matching feature caches first, repeated scans reuse the parquet caches under `data/cache/features/` instead of recomputing all patent-specialized feature vectors.
 
 When trained on a separate HF train slice and evaluated on `validation-100`, the learned linear reranker currently:
 
-- underperforms `local-embedding` slightly on `hit@1`
-- improves `hit@3`, `recall@3`, and `exact@|gold|`
-- remains a better experimental benchmark path than the full hand-tuned `patent-specialized` score
+- best current config is `train_rows=200` with `dense_score + bm25_score + field_lexical_score`
+- this reaches `hit@1=0.600`, `hit@3=0.910`, `recall@3=0.850`, `exact@|gold|=0.510` on `validation-100`
+- compared with pure `local-embedding` at `hit@1=0.590`, `hit@3=0.860`, `recall@3=0.802`, `exact@|gold|=0.470`
+- it remains the preferred experimental benchmark path over the full hand-tuned `patent-specialized` score
 
 ### 7.6 Benchmark report generation
 

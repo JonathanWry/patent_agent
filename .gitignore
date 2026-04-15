@@ -13,6 +13,7 @@ outputs/
 data/indexes/
 data/models/
 data/cache/
+data/cache/
 *.faiss
 *.pkl
 
